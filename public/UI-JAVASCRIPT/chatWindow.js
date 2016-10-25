@@ -7,41 +7,45 @@ function koreBotChat() {
     };
     var _botInfo = {};
     var detectScriptTag = /<script\b[^>]*>([\s\S]*?)/gm;
-	var _eventQueue = {};
+    var _eventQueue = {};
     String.prototype.isNotAllowedHTMLTags = function () {
         var wrapper = document.createElement('div');
         wrapper.innerHTML = this;
+		var wrapperScript = wrapper.querySelector('script');
+		var wrapperLink = wrapper.querySelector('link');
+		var wrapperA = wrapper.querySelector('a');
+		var wrapperImg = wrapper.querySelector('img');
 
         var setFlags = {
             isValid: true,
             key: ''
         };
-        if ($(wrapper).find('script').length) {
+        if (wrapperScript !== null) {
             setFlags.isValid = false;
 
         }
-        if ($(wrapper).find('link').length && $(wrapper).find('link').attr('href').indexOf('script') !== -1) {
-            if(detectScriptTag.test($(wrapper).find('link').attr('href'))) {
+        if (wrapperLink !== null && wrapperLink.href.indexOf('script') !== -1) {
+            if(detectScriptTag.test(wrapperLink.href)) {
                 setFlags.isValid = false;
             } else {
                 setFlags.isValid = true;
             }
         }
-        if ($(wrapper).find('a').length && $(wrapper).find('a').attr('href').indexOf('script') !== -1) {
-            if(detectScriptTag.test($(wrapper).find('a').attr('href'))) {
+        if (wrapperA !== null && wrapperA.href.indexOf('script') !== -1) {
+            if(detectScriptTag.test(wrapperA.href)) {
                 setFlags.isValid = false;
             } else {
                 setFlags.isValid = true;
             }
         }
-        if ($(wrapper).find('img').length && $(wrapper).find('img').attr('src').indexOf('script') !== -1) {
-            if(detectScriptTag.test($(wrapper).find('img').attr('href'))) {
+        if (wrapperImg !== null && wrapperImg.src.indexOf('script') !== -1) {
+            if(detectScriptTag.test(wrapperImg.src)) {
                 setFlags.isValid = false;
             } else {
                 setFlags.isValid = true;
             }
         }
-        if ($(wrapper).find('object').length) {
+        if (wrapper.querySelector('object') !== null) {
             setFlags.isValid = false;
         }
 
@@ -234,7 +238,9 @@ function koreBotChat() {
                 return "<br/>";
             }
             var nextln = regEx.NEWLINE;
-            function linkreplacer(match, p1, offset, string) {
+            //str = xssAttack(str);
+			
+			function linkreplacer(match, p1, offset, string) {
 				var dummyString = string.replace(_regExForMarkdownLink, '[]');
 				if (dummyString.indexOf(match) !== -1){
 					var _link = p1.indexOf('http') < 0 ? 'http://' + match : match, _target;
@@ -245,37 +251,45 @@ function koreBotChat() {
 					return match;
 				}
 			}
+            var nextln = regEx.NEWLINE;
             //check for whether to linkify or not
 			var wrapper1 = document.createElement('div');
 			wrapper1.innerHTML = (str || '').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
 			wrapper1.innerHTML = xssAttack(wrapper1.innerHTML);
-			if ($(wrapper1).find('a').attr('href')) {
+			if (wrapper1.getElementsByTagName('a')[0] && wrapper1.getElementsByTagName('a')[0].getAttribute('href')) {
 				str = wrapper1.innerHTML;
 			} else {
 				str = wrapper1.innerHTML.replace(_regExForLink, linkreplacer);
 			}
+
             //Adding target=web for links if authUrl is true
             if (component && component.componentData && component.componentData.bot && component.componentData.bot.authUrl) {
                 var rawHTML = str;
-                var $div = $('<div>').html(rawHTML);
+				var $div = document.createElement('div');
+                $div.innerHTML = rawHTML;
 
-                var _aDivs = $div.find('a');
-                _aDivs.toArray().forEach(function (ele) {
+                var _aDivs = $div.querySelectorAll('a');
+                _aDivs.forEach(function (ele) {
                     ele.href += '&target=web';
-                    $(ele).attr('data-authUrl', ele.href);
+					var authAttr = document.createAttribute("data-authUrl");
+					authAttr.value = ele.href;
+					ele.setAttributeNode(authAttr);
                 });
-                str = $div.html();
+                str = $div.innerHTML;
             }
             //Adding target=web for links if actionUrl is true
             if (component && component.componentData && component.componentData.bot && component.componentData.bot.actionUrl) {
                 var rawHTML_A = str;
-                var $div_A = $('<div>').html(rawHTML_A);
-                var _aDivs_A = $div_A.find('a');
-                _aDivs_A.toArray().forEach(function (ele) {
+				var $div_A = document.createElement('div');
+                $div_A.innerHTML = rawHTML_A;
+                var _aDivs_A = $div_A.querySelectorAll('a');
+                _aDivs_A.forEach(function (ele) {
                     ele.href += '&target=web';
-                    $(ele).attr('data-actionUrl', ele.href);
+					var actionAttr = document.createAttribute("data-actionUrl");
+					actionAttr.value = ele.href;
+					ele.setAttributeNode(actionAttr);
                 });
-                str = $div_A.html();
+                str = $div_A.innerHTML;
             }
             
             return helpers.nl2br(helpers.checkMarkdowns(str));
@@ -372,11 +386,33 @@ function koreBotChat() {
 			return val;
 		}
     };
-	
 	function isEven(n) {
 		n = Number(n);
 		return n === 0 || !!(n && !(n%2));
 	}
+	
+	function hasClass(el, className) {
+	  if (el.classList)
+		return el.classList.contains(className)
+	  else
+		return !!el.className.match(new RegExp('(\\s|^)' + className + '(\\s|$)'))
+	}
+
+	function addClass(el, className) {
+	  if (el.classList)
+		el.classList.add(className)
+	  else if (!hasClass(el, className)) el.className += " " + className
+	}
+
+	function removeClass(el, className) {
+	  if (el.classList)
+		el.classList.remove(className)
+	  else if (hasClass(el, className)) {
+		var reg = new RegExp('(\\s|^)' + className + '(\\s|$)')
+		el.className=el.className.replace(reg, ' ')
+	  }
+	}
+	
 	function extend(){
 		var rec = function(obj) {
 			var recRes = {};
@@ -422,17 +458,16 @@ function koreBotChat() {
         this.config = extend(this.config, cfg);
         this.init();
     }
-	
+
     chatWindow.prototype.init = function () {
         var me = this;
-        _botInfo = me.config.botOptions.botInfo;
+        _botInfo = extend({},me.config.botOptions.botInfo);
         me.config.botOptions.botInfo = {chatBot:_botInfo.name,taskBotId :_botInfo._id};
         var tempTitle = _botInfo.name;
         me.config.botMessages = botMessages;
 
         me.config.chatTitle = me.config.botMessages.connecting;
-        var chatWindowHtml = $(me.getChatTemplate()).tmpl(me.config);
-        me.config.chatContainer = chatWindowHtml;
+        var chatWindowHtml = me.getChatTemplate('chatWindowTemplate', me.config);
 
         me.config.chatTitle = tempTitle;
         bot.init(me.config.botOptions);
@@ -441,7 +476,9 @@ function koreBotChat() {
 
     chatWindow.prototype.destroy = function () {
         var me = this;
-        $('.kore-chat-overlay').hide();
+		if(document.querySelector('.kore-chat-overlay') !== null) {
+			document.querySelector('.kore-chat-overlay').style.display = "none";
+		}
         bot.close();
         if (me.config && me.config.chatContainer) {
             me.config.chatContainer.remove();
@@ -450,8 +487,8 @@ function koreBotChat() {
 
     chatWindow.prototype.resetWindow = function() {
         var me = this;
-        me.config.chatContainer.find('.kore-chat-header .header-title').html( me.config.botMessages.reconnecting);
-        me.config.chatContainer.find('.chat-container').html("");
+        me.config.chatContainer.querySelector('.kore-chat-header .header-title').innerHTML = me.config.botMessages.reconnecting;
+        me.config.chatContainer.querySelector('.chat-container').innerHTML = "";
         bot.close();
         bot.init(me.config.botOptions);
     };
@@ -459,145 +496,114 @@ function koreBotChat() {
     chatWindow.prototype.bindEvents = function () {
         var me = this;
         var _chatContainer = me.config.chatContainer;
-        _chatContainer.draggable({
-                handle: _chatContainer.find(".kore-chat-header .header-title"),
-                containment: "window",
-                scroll: false
-        }).resizable({
-                handles: "n, e, w, s",
-                containment: "html"
-        });
+		var _chatInputBox = _chatContainer.querySelector('.chatInputBox');
+		var _expandBtn = _chatContainer.querySelector('.expand-btn');
+		var _closeBtn = _chatContainer.querySelector('.close-btn');
+		var _minimizeBtn =  _chatContainer.querySelector('.minimize-btn');
+		var _reloadBtn = _chatContainer.querySelector('.reload-btn');
 
-        _chatContainer.off('keyup', '.chatInputBox').on('keyup', '.chatInputBox', function (event) {
-            var _footerContainer = $(me.config.container).find('.kore-chat-footer');
-            var _bodyContainer = $(me.config.container).find('.kore-chat-body');
-            _bodyContainer.css('bottom', _footerContainer.outerHeight());
+        _chatInputBox.addEventListener('keyup', function (event) {
+            var _footerContainer = me.config.container.querySelector('.kore-chat-footer');
+            var _bodyContainer =me.config.container.querySelector('.kore-chat-body');
+            _bodyContainer.style.bottom = _footerContainer.scrollHeight;
         });
-        _chatContainer.off('keydown', '.chatInputBox').on('keydown', '.chatInputBox', function (event) {
-            var _this = $(this);
-            var _footerContainer = $(me.config.container).find('.kore-chat-footer');
-            var _bodyContainer = $(me.config.container).find('.kore-chat-body');
-            _bodyContainer.css('bottom', _footerContainer.outerHeight());
+		
+        _chatInputBox.addEventListener('keydown', function (event) {
+            var _footerContainer = me.config.container.querySelector('.kore-chat-footer');
+            var _bodyContainer =me.config.container.querySelector('.kore-chat-body');
+            _bodyContainer.style.bottom = _footerContainer.scrollHeight;
             if (event.keyCode === 13) {
                 event.preventDefault();
-                me.sendMessage(_this);
+                me.sendMessage(_chatInputBox);
                 return;
             }
         });
         
-        _chatContainer.off('paste', '.chatInputBox').on('paste', '.chatInputBox', function (event) {
+        _chatInputBox.addEventListener('paste', function (event) {
             event.preventDefault();
             var _clipboardData = event.clipboardData || (event.originalEvent && event.originalEvent.clipboardData) || window.clipboardData;
             if(_clipboardData){
-                $(this).html(helpers.nl2br(_clipboardData.getData('text').escapeHTML()));
-            }
-        });
-        _chatContainer.off('click', '.sendChat').on('click', '.sendChat', function (event) {
-            var _footerContainer = $(me.config.container).find('.kore-chat-footer');
-            me.sendMessage(_footerContainer.find('.chatInputBox'));
-        });
-        
-        _chatContainer.off('click', 'li a').on('click','li a',function(e){
-            e.preventDefault();
-            var a_link = $(this).attr('href');
-			var _trgt = $(this).attr('target');
-			if (_trgt === "_self") {
-				callListener("provideVal", {link: a_link} );
-				return;
-			}
-			if(me.config.allowIframe === true){
-                me.openPopup(a_link);
-            }
-            else{
-                var _tempWin = window.open(a_link,"_blank");
+                _chatInputBox.innerHTML = helpers.nl2br(_clipboardData.getData('text').escapeHTML());
             }
         });
 
-        _chatContainer.off('click', '.close-btn').on('click', '.close-btn', function (event) {
+        _closeBtn.addEventListener('click', function (event) {
             me.destroy();
         });
 
-        _chatContainer.off('click', '.minimize-btn').on('click', '.minimize-btn', function (event) {
+        _minimizeBtn.addEventListener('click', function (event) {
             if (me.minimized === true) {
-                _chatContainer.removeClass("minimize");
+				removeClass(_chatContainer, "minimize");
                 me.minimized = false;
-                if(me.expanded === false){
-                    _chatContainer.draggable({
-                        handle: _chatContainer.find(".kore-chat-header .header-title"),
-                        containment: "window",
-                        scroll: false
-                    });
-                }
             } else
             {
-                _chatContainer.addClass("minimize");
-                if(me.expanded === false && _chatContainer.hasClass("ui-draggable")) {
-                    _chatContainer.draggable("destroy");
-                }
-                _chatContainer.find('.minimized-title').html("Talk to "+ me.config.chatTitle);
+                addClass(_chatContainer, "minimize");
+                _chatContainer.querySelector('.minimized-title').innerHTML = "Talk to "+ me.config.chatTitle;
                 me.minimized = true;
             }
         });
         
-        _chatContainer.off('click', '.expand-btn').on('click', '.expand-btn', function (event) {
-            if($('.kore-chat-overlay').length === 0) {
-                $(me.config.container).append('<div class="kore-chat-overlay"></div>');
+        _expandBtn.addEventListener('click', function (event) {
+            if(document.querySelector('.kore-chat-overlay') === null) {
+				var _divOverlay = document.createElement('div');
+				_divOverlay.className = "kore-chat-overlay";
+                me.config.container.appendChild(_divOverlay);
+				
+				_divOverlay.addEventListener('click',function(){
+					if(me.expanded === true){
+						_expandBtn.click();
+					}
+				});
             }
+			var _chatOverlay = me.config.container.querySelector('.kore-chat-overlay');
             if (me.expanded === true) {
-                $('.kore-chat-overlay').hide();
-                $(this).attr('title',"Expand");
-                _chatContainer.removeClass("expanded");
+                _chatOverlay.style.display = "none";
+                _expandBtn.title = "Expand";
+                removeClass(_chatContainer, "expanded");
                 me.expanded = false;
-                _chatContainer.draggable({
-                    handle: _chatContainer.find(".kore-chat-header .header-title"),
-                    containment: "window",
-                    scroll: false
-                }).resizable({
-                        handles: "n, e, w, s",
-                        containment: "html"
-                });
             } else {
-                $('.kore-chat-overlay').show();
-                $(this).attr('title',"Collapse");
-                _chatContainer.addClass("expanded");
-                _chatContainer.draggable("destroy").resizable("destroy");
+                _chatOverlay.style.display = "block";;
+                _expandBtn.title = "Collapse";
+                addClass(_chatContainer, "expanded");
                 me.expanded = true;
             }
-            var container_pos_left = _chatContainer.position().left + _chatContainer.width();
-            if(container_pos_left > $(window).width()){
-                _chatContainer.css('left',_chatContainer.position().left - (container_pos_left - $(window).width() + 10)  + "px" );
-            }
         });
-        $('body').on('click','.kore-chat-overlay, .kore-chat-window .minimize-btn',function(){
+		
+		document.querySelector('body').querySelector('.kore-chat-window .minimize-btn').addEventListener('click',function(){
             if(me.expanded === true){
-                $('.kore-chat-window .expand-btn').trigger('click');
+                _expandBtn.click();
             }
         });
         
-        _chatContainer.off('click', '.minimized').on('click', '.minimized,.minimized-title', function (event) {
-            _chatContainer.removeClass("minimize");
+        _chatContainer.querySelector('.minimized').addEventListener('click', function (event) {
+            removeClass(_chatContainer, "minimize");
             me.minimized = false;
-            _chatContainer.draggable({
-                handle: _chatContainer.find(".kore-chat-header .header-title"),
-                containment: "window",
-                scroll: false
-            });
+        });
+		_chatContainer.querySelector('.minimized-title').addEventListener('click', function (event) {
+            removeClass(_chatContainer, "minimize");
+            me.minimized = false;
         });
 
-        _chatContainer.off('click', '.reload-btn').on('click', '.reload-btn',function(event){
-            $(this).addClass("disabled").prop('disabled',true);
+        _reloadBtn.addEventListener('click', function(event){
+            addClass(_reloadBtn, "disabled");
+			_reloadBtn.disabled = true;
             me.resetWindow();
         });
         bot.on("open", function (response) {
-            var _chatInput = _chatContainer.find('.kore-chat-footer .chatInputBox');
-            _chatContainer.find('.kore-chat-header .header-title').html(me.config.chatTitle).attr('title',me.config.chatTitle);
-            _chatContainer.find('.kore-chat-header .disabled').prop('disabled',false).removeClass("disabled");
-            _chatInput.focus();
+			var _botTitle = _chatContainer.querySelector('.kore-chat-header .header-title');
+			var _reconnectEl = _chatContainer.querySelector('.kore-chat-header .disabled');
+            _botTitle.innerHTML = _botTitle.title = me.config.chatTitle;
+			
+			if(_reconnectEl !== null){
+				_reconnectEl.disabled = false;
+				removeClass(_reconnectEl, "disabled");
+			}
+            _chatInputBox.focus();
         });
 
         bot.on("message", function (message) {
             if(me.popupOpened === true){
-                $('.kore-auth-popup .close-popup').trigger("click");
+                document.querySelector('.kore-auth-popup .close-popup').click();
             }
             var tempData = JSON.parse(message.data);
 
@@ -624,26 +630,27 @@ function koreBotChat() {
     
     chatWindow.prototype.bindIframeEvents = function(authPopup){
         var me = this;
-        authPopup.on('click','.close-popup',function(){
-           $(this).closest('.kore-auth-popup').remove();
-           $('.kore-auth-layover').remove();
+        authPopup.querySelector('.close-popup').addEventListener('click', function(){
+           authPopup.remove();
            me.popupOpened = false;
         });
-        
-        var ifram = authPopup.find('iframe')[0];
-        
-        ifram.addEventListener('onload',function(){
-            console.log(this);            
-        },true);
     };
     
     chatWindow.prototype.render = function (chatWindowHtml) {
         var me = this;
-        $(me.config.container).append(chatWindowHtml);
+		var _div = document.createElement('div');
+		_div.innerHTML = chatWindowHtml;
+		me.config.container = document.querySelector(me.config.container);
+		if(me.config.container === null) {
+			me.config.container = document.querySelector('body');
+		}
+        me.config.container.appendChild(_div);
+		
+		me.config.chatContainer = document.getElementById('koreChatWindow');
 
-        if (me.config.container !== "body") {
-            $(me.config.container).addClass('pos-relative');
-            $(me.config.chatContainer).addClass('pos-absolute');
+        if (me.config.container.localName !== "body") {
+            addClass(me.config.container,'pos-relative');
+            addClass(me.config.container, 'pos-absolute');
         }
 
         me.bindEvents();
@@ -651,18 +658,19 @@ function koreBotChat() {
 
     chatWindow.prototype.sendMessage = function (chatInput) {
         var me = this;
-        if (chatInput.text().trim() === "") {
+        if (chatInput.textContent.trim() === "") {
             return;
         }
-        var _bodyContainer = $(me.config.chatContainer).find('.kore-chat-body');
-        var _footerContainer = $(me.config.chatContainer).find('.kore-chat-footer');
+		
+		var _footerContainer = me.config.container.querySelector('.kore-chat-footer');
+        var _bodyContainer =me.config.container.querySelector('.kore-chat-body');
         var clientMessageId = new Date().getTime();
 
         var msgData = {
             'type': "currentUser",
             "message": [{
                 'type': 'text',
-                'cInfo': {'body':chatInput.html()},
+                'cInfo': {'body':chatInput.innerHTML},
                 'clientMessageId': clientMessageId
             }],
             "createdOn": clientMessageId
@@ -670,14 +678,14 @@ function koreBotChat() {
 
         var messageToBot = {};
         messageToBot["clientMessageId"] = clientMessageId;
-        messageToBot["message"] = {body: chatInput.text().trim(), attachments: []};
+        messageToBot["message"] = {body: chatInput.textContent.trim(), attachments: []};
         messageToBot["resourceid"] = '/bot.message';
 
         bot.sendMessage(messageToBot, function messageSent() {
 
         });
-        chatInput.html("");
-        _bodyContainer.css('bottom', _footerContainer.outerHeight());
+        chatInput.innerHTML = "";
+        _bodyContainer.style.bottom = _footerContainer.scrollHeight;
 		if (msgData && msgData.message && msgData.message[0].cInfo && msgData.message[0].cInfo.body) {
 			msgData.message[0].cInfo.body = helpers.convertMDtoHTML(msgData.message[0].cInfo.body);
 		}
@@ -686,92 +694,116 @@ function koreBotChat() {
 
     chatWindow.prototype.renderMessage = function (msgData) {
         var me = this;
-        var _chatContainer = $(me.config.chatContainer).find('.chat-container');
+        var _chatContainer = me.config.chatContainer.querySelector('.chat-container');
 
-        var messageHtml = $(me.getChatTemplate("message")).tmpl({
-            'msgData': msgData,
-            'helpers':helpers
-        });
+        var messageHtml = me.getChatTemplate("message", msgData);
 
-        _chatContainer.append(messageHtml);
-
-        //me.formatMessages(messageHtml);
-        _chatContainer.animate({
-            scrollTop: _chatContainer.prop("scrollHeight")
-        }, 0);
-    };
-
-    chatWindow.prototype.formatMessages = function (msgContainer){
-    /*adding target to a tags */
-        $(msgContainer).find('a').attr('target','_blank');
+        _chatContainer.innerHTML += messageHtml;
+		if(_chatContainer.querySelectorAll('li a').length > 0) {
+			_chatContainer.querySelectorAll('li a').item(function(ele){
+				ele.addEventListener('click',function(e){
+					e.preventDefault();
+					var a_link = this.href;
+					var _trgt = this.target;
+					if (_trgt === "_self") {
+						callListener("provideVal", {link: a_link} );
+						return;
+					}
+					if(me.config.allowIframe === true){
+						me.openPopup(a_link);
+					}
+					else{
+						var _tempWin = window.open(a_link,"_blank");
+					}
+				});
+			});
+		}
+        _chatContainer.scrollTop = _chatContainer.scrollHeight;
     };
     
     chatWindow.prototype.openPopup = function(link_url){
         var me = this;
-        var popupHtml = $(me.getChatTemplate("popup")).tmpl({
-            "link_url":link_url
-        });
-        $(me.config.container).append(popupHtml);
+        var popupHtml = me.getChatTemplate("popup", link_url);
+							
+		var _div = document.createElement('div');
+		_div.className = "kore-auth-layover";
+		_div.innerHTML = popupHtml;
+		
+        me.config.container.appendChild(_div);
         me.popupOpened = true;
-        me.bindIframeEvents($(popupHtml));
+        me.bindIframeEvents(_div);
     };
 
-    chatWindow.prototype.getChatTemplate = function (tempType) {
-        var chatFooterTemplate =
-                '<div class="footerContainer pos-relative"> \
-			<div class="chatInputBox" contenteditable="true" placeholder="${botMessages.message}"></div> \
-			<div class="chatSendMsg">Press enter to send</div> \
-		</div>';
-
-        var chatWindowTemplate = '<script id="chat_window_tmpl" type="text/x-jqury-tmpl"> \
-			<div class="kore-chat-window"> \
-                                <div class="minimized-title"></div> \
-                                <div class="minimized"><span class="messages"></span></div> \
-				<div class="kore-chat-header"> \
-					<div class="header-title" title="${chatTitle}">${chatTitle}</div> \
-					<div class="chat-box-controls"> \
-                                                <button class="reload-btn" title="Reconnect">&#10227;</button> \
-						<button class="minimize-btn" title="Minimize">&minus;</button> \
-                                                <button class="expand-btn" title="Expand"><span></span></button>\
-						<button class="close-btn" title="Close">&times;</button> \
-					</div> \
-				</div> \
-				<div class="kore-chat-body"> \
-					<ul class="chat-container"></ul> \
-				</div> \
-				<div class="kore-chat-footer">' + chatFooterTemplate + '</div> \
-			</div> \
-		</script>';
-
-        var msgTemplate = ' <script id="chat_message_tmpl" type="text/x-jqury-tmpl"> \
-			{{if msgData.message}} \
-			{{each(key, msgItem) msgData.message}} \
-                        {{if msgItem.cInfo && msgItem.type === "text"}} \
-			<li {{if msgData.type !== "bot_response"}}id="msg_${msgItem.clientMessageId}"{{/if}} class="{{if msgData.type === "bot_response"}}fromOtherUsers{{else}}fromCurrentUser{{/if}} {{if msgData.icon}}with-icon{{/if}}"> \
-                                {{if msgData.createdOn}}<div class="extra-info">${helpers.formatDate(msgData.createdOn)}</div>{{/if}} \
-                                {{if msgData.icon}}<div class="profile-photo"> <div class="user-account avtar" style="background-image:url(${msgData.icon})"></div> </div> {{/if}} \
-                                <div class="messageBubble">\
-                                    {{if msgData.type === "bot_response"}} {{html helpers.convertMDtoHTML(msgItem.cInfo.body)}} {{else}} {{html msgItem.cInfo.body}} {{/if}} \
-                                </div> \
-			</li> \
-                        {{/if}} \
-			{{/each}} \
-			{{/if}} \
-		</scipt>';
+    chatWindow.prototype.getChatTemplate = function (tempType, tempData) {
         
-        var popupTemplate = '<script id="kore_popup_tmpl" type="text/x-jquery-tmpl"> \
-                <div class="kore-auth-layover">\
-                    <div class="kore-auth-popup"> \
-                        <div class="popup_controls"><span class="close-popup" title="Close">&times;</span></div> \
-                        <iframe id="authIframe" src="${link_url}"></iframe> \
-                    </div> \
-                </div>\
-        </script>';
         if (tempType === "message") {
+			var msgTemplate = '';
+			if(tempData.message) {
+				tempData.message.forEach(function(msgItem){
+					if(msgItem.cInfo && msgItem.type === "text") { 
+						var msg_data = '';
+						var msg_class = '';
+						var msg_icon_html = '';
+						var msg_created_html = '';
+						var msg_html = '';
+						
+						if(tempData.type !== "bot_response") {
+							msg_data = 'id = "msg_' + msgItem.clientMessageId + '"';
+							msg_class = 'fromCurrentUser';
+							msg_html = msgItem.cInfo.body;
+						}
+						else {
+							msg_class = 'fromOtherUsers';
+							msg_html = helpers.convertMDtoHTML(msgItem.cInfo.body);
+						}
+						
+						if(tempData.icon) {
+							msg_class += ' with-icon';
+							msg_icon_html = '<div class="profile-photo"> <div class="user-account avtar" style="background-image:url('+ tempData.icon +')"></div> </div>';
+						}
+						
+						if(tempData.createdOn) {
+							msg_created_html = '<div class="extra-info">'+ helpers.formatDate(tempData.createdOn) +'</div>';
+						}
+						
+						msgTemplate += '<li '+ msg_data +' class=" ' + msg_class + '"> \
+                                '+ msg_created_html +' \
+                                '+ msg_icon_html +' \
+                                <div class="messageBubble">\
+                                    '+ msg_html +' \
+                                </div> \
+						</li>';
+					}
+				});
+			}
             return msgTemplate;
         } else if(tempType === "popup"){
+			var popupTemplate = '<div class="kore-auth-popup"><div class="popup_controls"><span class="close-popup" title="Close">&times;</span></div> \
+							<iframe id="authIframe" src=" ' + tempData + '"></iframe></div>';
             return popupTemplate;
         } else {
+			var chatWindowTemplate = '<div class="kore-chat-window" id="koreChatWindow"> \
+									<div class="minimized-title"></div> \
+									<div class="minimized"><span class="messages"></span></div> \
+					<div class="kore-chat-header"> \
+						<div class="header-title" title="'+ tempData.chatTitle +'">'+ tempData.chatTitle +'</div> \
+						<div class="chat-box-controls"> \
+													<button class="reload-btn" title="Reconnect">&#10227;</button> \
+							<button class="minimize-btn" title="Minimize">&minus;</button> \
+													<button class="expand-btn" title="Expand"><span></span></button>\
+							<button class="close-btn" title="Close">&times;</button> \
+						</div> \
+					</div> \
+					<div class="kore-chat-body"> \
+						<ul class="chat-container"></ul> \
+					</div> \
+					<div class="kore-chat-footer"> \
+						<div class="footerContainer pos-relative"> \
+							<div class="chatInputBox" contenteditable="true" placeholder="'+ tempData.botMessages.message +'"></div> \
+							<div class="chatSendMsg">Press enter to send</div> \
+						</div> \
+					</div> \
+				</div>';
             return chatWindowTemplate;
         }
     };
@@ -779,11 +811,12 @@ function koreBotChat() {
     var chatInitialize;
     
     window.onbeforeunload = function(){
-        if (chatInitialize && $(chatInitialize.config.chatContainer).length > 0) {
+        if (chatInitialize && document.querySelector('.kore-chat-window') !== null) {
             chatInitialize.destroy();
             return null;
         }
     }
+	
 	this.addListener = function(evtName, trgFunc) {
 		if (!_eventQueue) {
 			_eventQueue = {};
@@ -812,8 +845,9 @@ function koreBotChat() {
 			}
 		}
 	}
+	
     this.show = function (cfg) {
-        if ($('body').find('.kore-chat-window').length > 0)
+        if (document.querySelector('.kore-chat-window') !== null)
         {
             return false;
         }
@@ -827,7 +861,7 @@ function koreBotChat() {
         }
     };
     return {
-		addListener: addListener,
+        addListener: addListener,
 		removeListener: removeListener,
 		show: show,
         destroy: destroy

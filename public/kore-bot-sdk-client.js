@@ -6,6 +6,15 @@ var bind = require('lodash').bind;
 var isFunction = require('lodash').isFunction;
 var RTM_CLIENT_EVENTS = clients.CLIENT_EVENTS.RTM;
 var RTM_EVENTS = clients.RTM_EVENTS;
+var jstz = require('./jstz.js');
+
+if(typeof window !== "undefined"){
+	window.kore = window.kore || {};
+	window.kore.botsdk = window.kore.botsdk || {};
+	window.kore.botsdk.logger = window.kore.botsdk.logger || require("debug");
+}
+
+var debug = require("debug")("botsdk:KoreBot");
 
 function KoreBot() {
 	EventEmitter.call(this);
@@ -14,6 +23,9 @@ function KoreBot() {
 	this.options = {};
 	this.accessToken = null;
 	this.initialized = false;
+	this.clients = clients;
+	this.latestId = null; // latest messageId.
+	this.oldestId = null; // oldest messageId.
 }
 inherits(KoreBot, EventEmitter);
 
@@ -21,10 +33,19 @@ KoreBot.prototype.emit = function emit() {
   KoreBot.super_.prototype.emit.apply(this, arguments);
 };
 
+/*
+sends a message to bot.
+*/
 KoreBot.prototype.sendMessage = function(message,optCb) {
+	debug("sending message to bot");
 	if(this.initialized){
 		message["resourceid"] = '/bot.message';
 		message["botInfo"] = this.options.botInfo || {};
+		message["client"] = this.options.client || "sdk";
+		message["meta"] = {
+			"timezone":jstz.jstz.determine().name(),
+			"locale":window.navigator.userLanguage || window.navigator.language
+		};
 		this.RtmClient.sendMessage(message,optCb);
 	}else{
 		if(optCb){
@@ -34,49 +55,203 @@ KoreBot.prototype.sendMessage = function(message,optCb) {
 	
 };
 
+/*
+emits a message event on message from the server.
+*/
 KoreBot.prototype.onMessage = function(msg) {
+	debug("on message from bot/self");
+	if(msg.from === "bot" && msg.type === "bot_response")
+	{
+		this.latestId = msg.messageId || this.latestId;
+		this.oldestId = this.oldestId || msg.messageId;
+	}
+
 	this.emit(RTM_EVENTS.MESSAGE, msg);
 };
 
+/*
+close's the WS connection.
+*/
 KoreBot.prototype.close = function() {
+	debug("request to close ws connection");
 	if (this.RtmClient) {
 		this.RtmClient._close();
 	}
 };
 
-KoreBot.prototype.onHistory = function(err, data) {
+/*
+on forward history.
+*/
+KoreBot.prototype.onForwardHistory = function(err, data) {
+	debug("on forward history");
+	
+	var clientresp = {};
+	clientresp.moreAvailable = data.moreAvailable;
+	clientresp.messages = [];
+	clientresp.forward = true;
+	clientresp.afterMessageId = this.latestId;
+	if (data.messages && data.messages.length > 0) {
+		var i;
+		for (i = 0; i < data.messages.length; i++) {
+			var _msg = {};
+			_msg.messageId = data.messages[i]._id;
+			this.oldestId = this.oldestId || data.messages[i]._id;
+			this.latestId = data.messages[i]._id || this.latestId;
+			if (data.messages[i].type === 'incoming') {
+				_msg.from = "self";
+				_msg.type = "user_message";
+			} else {
+				_msg.from = "bot";
+				_msg.type = "bot_response";
+			}
+			var j = 0;
+			if (data.messages[i].components && data.messages[i].components.length > 0) {
+				_msg.message = [];
+				for (j = 0; j < data.messages[i].components.length; j++) {
+					var _comp = {};
+					_comp.type = data.messages[i].components[j].cT;
+					if (_comp.type === 'text') {
+						_comp.cInfo = {};
+						_comp.cInfo.body = data.messages[i].components[j].data && data.messages[i].components[j].data.text;
+					}
+
+					_msg.message[j] = _comp;
+				}
+			}
+			_msg.createdOn = data.messages[i].createdOn;
+
+			clientresp.messages[i] = _msg;
+
+		}
+	}
+
+	this.emit("history", clientresp);
 
 };
 
-KoreBot.prototype.getHistory = function(options) {
-	//@@TODO --??
 
-	this.WebClient.history.history({}, bind(this.onHistory, this));
+/*
+on backward history.
+*/
+
+KoreBot.prototype.onBackWardHistory = function(err, data) {
+	debug("on backword history");
+	
+	var clientresp = {};
+	clientresp.moreAvailable = data.moreAvailable;
+	clientresp.messages = [];
+	clientresp.backward = true;
+	clientresp.beforeMessageId = this.oldestId;
+	if (data.messages && data.messages.length > 0) {
+		var i;
+		for (i = 0; i < data.messages.length; i++) {
+			var _msg = {};
+			_msg.messageId = data.messages[i]._id;
+			this.oldestId = data.messages[i]._id || this.oldestId;
+			this.latestId = this.latestId || data.messages[i]._id;
+			if (data.messages[i].type === 'incoming') {
+				_msg.from = "self";
+				_msg.type = "user_message";
+			} else {
+				_msg.from = "bot";
+				_msg.type = "bot_response";
+			}
+			var j = 0;
+			if (data.messages[i].components && data.messages[i].components.length > 0) {
+				_msg.message = [];
+				for (j = 0; j < data.messages[i].components.length; j++) {
+					var _comp = {};
+					_comp.type = data.messages[i].components[j].cT;
+					if (_comp.type === 'text') {
+						_comp.cInfo = {};
+						_comp.cInfo.body = data.messages[i].components[j].data && data.messages[i].components[j].data.text;
+					}
+
+					_msg.message[j] = _comp;
+				}
+			}
+			_msg.createdOn = data.messages[i].createdOn;
+
+			clientresp.messages[i] = _msg;
+
+		}
+	}
+
+	this.emit("history", clientresp);
 };
 
+/*
+gets the history of the conversation.
+*/
+KoreBot.prototype.getHistory = function(opts) {
+	debug("get history");
+	opts = opts || {};
+	var __opts__ = {};
+	__opts__.forward = opts.forward;
+	__opts__.limit = opts.limit || 10; // 10 is the max size.
+    
+	if (__opts__.forward) {
+		if (this.latestId)
+			__opts__.msgId = this.latestId;
+	} else {
+		if (this.oldestId)
+			__opts__.msgId = this.oldestId;
+	}
+
+	__opts__.botInfo = this.options.botInfo;
+	__opts__.authorization = "bearer " + this.WebClient.user.accessToken;
+
+	if (__opts__.forward)
+		this.WebClient.history.history(__opts__, bind(this.onForwardHistory, this));
+	else
+		this.WebClient.history.history(__opts__, bind(this.onBackWardHistory, this));
+};
+
+/*
+*/
 KoreBot.prototype.sync = function(options) {
 	//@@TODO --??
 };
 
+/*
+emits the open event on WS connection established.
+*/
 KoreBot.prototype.onOpenWSConnection = function(msg) {
+	debug("opened WS Connection");
 	this.initialized = true;
+	this.getHistory({});
 	this.emit(RTM_CLIENT_EVENTS.RTM_CONNECTION_OPENED, {});
 };
 
+/*
+initializes the rtmclient and binds the cb's for ws events.
+*/
 KoreBot.prototype.onLogIn = function(err, data) {
-	this.accessToken = data.authorization.accessToken;
-	this.options.accessToken = this.accessToken;
-	this.WebClient.user.accessToken = this.accessToken;
-	this.RtmClient = new clients.KoreRtmClient({}, this.options);
-	this.RtmClient.start({"botInfo":this.options.botInfo});
-	this.RtmClient.on(RTM_EVENTS.MESSAGE,bind(this.onMessage, this));
-	this.RtmClient.on(RTM_CLIENT_EVENTS.RTM_CONNECTION_OPENED,bind(this.onOpenWSConnection, this));
+	debug("sign-in/anonymous user onLogin");
+	if (err) {
+        console.error(err && err.stack);
+	} else {
+		this.accessToken = data.authorization.accessToken;
+		this.options.accessToken = this.accessToken;
+		this.WebClient.user.accessToken = this.accessToken;
+		this.RtmClient = new clients.KoreRtmClient({}, this.options);
+		this.RtmClient.start({
+			"botInfo": this.options.botInfo
+		});
+		this.RtmClient.on(RTM_EVENTS.MESSAGE, bind(this.onMessage, this));
+		this.RtmClient.on(RTM_CLIENT_EVENTS.RTM_CONNECTION_OPENED, bind(this.onOpenWSConnection, this));
+	}
 };
 
+/*
+validates the JWT claims and issue's access token for valid user.
+*/
 KoreBot.prototype.logIn = function(err, data) {
 	if (err) {
-            //TODO::??
+		debug("error in assertionFn %s",err);
+		console.error("error in assertionFn",err && err.stack);
 	} else {
+		debug("signed-in user login");
 		this.options = data;
 		this.claims = data.assertion;
 		this.WebClient = new clients.KoreWebClient({}, this.options);
@@ -86,84 +261,36 @@ KoreBot.prototype.logIn = function(err, data) {
 
 };
 
-KoreBot.prototype.generateUUID  = function() {
-    var d = new Date().getTime();
-    if(window.performance && typeof window.performance.now === "function"){
-        d += performance.now(); //use high-precision timer if available
-    }
-    var uuid = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-        var r = (d + Math.random()*16)%16 | 0;
-        d = Math.floor(d/16);
-        return (c=='x' ? r : (r&0x3|0x8)).toString(16);
-    });
-    return uuid;
-};
-
-
-KoreBot.prototype.anonymous = function(options){
-	var korecookie = localStorage.getItem("korecom");
-    // if(korecookie) 
-    // 	korecookie = JSON.parse(korecookie);
-
-	var uuid = (korecookie) || this.generateUUID();
-
-	localStorage.setItem("korecom", uuid);
-
-     if(!options.clientId){
-     	console.log("clientId should be there for anonymous user");
-        return;
-     } 	
-     var assertion = {};
-     assertion.issuer    = options.clientId;
-     assertion.subject   = uuid;
-
-     options.assertion = assertion;
-
-	this.options = options;
-	this.claims = options.assertion;
-	this.WebClient = new clients.KoreWebClient({}, this.options);
-	this.WebClient.claims = this.claims;
-	this.WebClient.anonymouslogin.login({
-		"assertion": options.assertion,
-		"botInfo":this.options.botInfo
-	}, bind(this.onLogIn, this));
-
-};
-
-
 /*
-Example of options ::
-{
-	assertion : function(options,callBack){
-	
-	},
-	isLoggedIn : true/false,
-	clientId  : "sadhash123",
-	orgId     : "1125rtrrt"
-}
+initializes the bot set up.
 */
 KoreBot.prototype.init = function(options) {
 	options = options || {};
 	this.options = options;
-	if(options.isLoggedIn){
-		if(isFunction(options.assertionFn)){
-			options.assertionFn(options,bind(this.logIn, this));
-		}else{
-         //TODO::??
+	if (!options.test) {
+		debug("test is false");
+		if (isFunction(options.assertionFn)) {
+			options.assertionFn(options, bind(this.logIn, this));
+		} else {
+			debug("assertion is not a function");
+			console.error("assertion is not a function");
 		}
 
-	}else{
-          this.anonymous(options);
-         //TODO::??
+	} else {
+		debug("test is true");
+		if (isFunction(options.koreAnonymousFn)) {
+			options.koreAnonymousFn.call(this, options);
+		} else {
+			debug("koreAnonymousFn is not a function");
+			console.error("koreAnonymousFn is not a function");
+		}
 	}
 };
-
-
 
 module.exports.instance = function(){
 	return new KoreBot();
 };
-},{"./index.js":1,"events":25,"inherits":19,"lodash":20}],1:[function(require,module,exports){
+},{"./index.js":1,"./jstz.js":2,"debug":21,"events":30,"inherits":23,"lodash":24}],1:[function(require,module,exports){
 var events = require('./lib/clients/events');
 
 module.exports= {
@@ -177,7 +304,356 @@ module.exports= {
   RTM_MESSAGE_SUBTYPES: events.RTM_MESSAGE_SUBTYPES,
 };
 
-},{"./lib/clients/events":4,"./lib/clients/rtm/client":8,"./lib/clients/web/client":16}],2:[function(require,module,exports){
+},{"./lib/clients/events":5,"./lib/clients/rtm/client":9,"./lib/clients/web/client":18}],2:[function(require,module,exports){
+/**
+ * This script gives you the zone info key representing your device's time zone setting.
+ *
+ * @name jsTimezoneDetect
+ * @version 1.0.4
+ * @author Jon Nylander
+ * @license MIT License - http://www.opensource.org/licenses/mit-license.php
+ *
+ * For usage and examples, visit:
+ * http://pellepim.bitbucket.org/jstz/
+ *
+ * Copyright (c) Jon Nylander
+ */
+
+/*jslint undef: true */
+/*global console, exports*/
+
+(function(root) {
+  /**
+   * Namespace to hold all the code for timezone detection.
+   */
+  var jstz = (function () {
+      'use strict';
+      var HEMISPHERE_SOUTH = 's',
+
+          /**
+           * Gets the offset in minutes from UTC for a certain date.
+           * @param {Date} date
+           * @returns {Number}
+           */
+          get_date_offset = function (date) {
+              var offset = -date.getTimezoneOffset();
+              return (offset !== null ? offset : 0);
+          },
+
+          get_date = function (year, month, date) {
+              var d = new Date();
+              if (year !== undefined) {
+                d.setFullYear(year);
+              }
+              d.setDate(date);
+              d.setMonth(month);
+              return d;
+          },
+
+          get_january_offset = function (year) {
+              return get_date_offset(get_date(year, 0 ,2));
+          },
+
+          get_june_offset = function (year) {
+
+              return get_date_offset(get_date(year, 5, 2));
+          },
+
+          /**
+           * Private method.
+           * Checks whether a given date is in daylight savings time.
+           * If the date supplied is after august, we assume that we're checking
+           * for southern hemisphere DST.
+           * @param {Date} date
+           * @returns {Boolean}
+           */
+          date_is_dst = function (date) {
+              var base_offset = ((date.getMonth() > 7 ? get_june_offset(date.getFullYear())
+                                                  : get_january_offset(date.getFullYear()))),
+                  date_offset = get_date_offset(date);
+
+
+              return (base_offset - date_offset) !== 0;
+          },
+
+          /**
+           * This function does some basic calculations to create information about
+           * the user's timezone.
+           *
+           * Returns a key that can be used to do lookups in jstz.olson.timezones.
+           *
+           * @returns {String}
+           */
+
+          lookup_key = function () {
+              var january_offset = get_january_offset(),
+                  june_offset = get_june_offset(),
+                  diff = get_january_offset() - get_june_offset();
+
+              if (diff < 0) {
+                  return january_offset + ",1";
+              } else if (diff > 0) {
+                  return june_offset + ",1," + HEMISPHERE_SOUTH;
+              }
+
+              return january_offset + ",0";
+          },
+
+          /**
+           * Uses get_timezone_info() to formulate a key to use in the olson.timezones dictionary.
+           *
+           * Returns a primitive object on the format:
+           * {'timezone': TimeZone, 'key' : 'the key used to find the TimeZone object'}
+           *
+           * @returns Object
+           */
+          determine = function () {
+              var key = lookup_key();
+              return new jstz.TimeZone(jstz.olson.timezones[key]);
+          },
+          
+          /**
+           * This object contains information on when daylight savings starts for
+           * different timezones.
+           *
+           * The list is short for a reason. Often we do not have to be very specific
+           * to single out the correct timezone. But when we do, this list comes in
+           * handy.
+           *
+           * Each value is a date denoting when daylight savings starts for that timezone.
+           */
+          dst_start_for = function (tz_name) {
+
+            var ru_pre_dst_change = new Date(2010, 6, 15, 1, 0, 0, 0), // In 2010 Russia had DST, this allows us to detect Russia :)
+                dst_starts = {
+                    'America/Denver':       new Date(2011, 2, 13, 3, 0, 0, 0),
+                    'America/Mazatlan':     new Date(2011, 3, 3, 3, 0, 0, 0),
+                    'America/Chicago':      new Date(2011, 2, 13, 3, 0, 0, 0),
+                    'America/Mexico_City':  new Date(2011, 3, 3, 3, 0, 0, 0),
+                    'America/Asuncion':     new Date(2012, 9, 7, 3, 0, 0, 0),
+                    'America/Santiago':     new Date(2012, 9, 3, 3, 0, 0, 0),
+                    'America/Campo_Grande': new Date(2012, 9, 21, 5, 0, 0, 0),
+                    'America/Montevideo':   new Date(2011, 9, 2, 3, 0, 0, 0),
+                    'America/Sao_Paulo':    new Date(2011, 9, 16, 5, 0, 0, 0),
+                    'America/Los_Angeles':  new Date(2011, 2, 13, 8, 0, 0, 0),
+                    'America/Santa_Isabel': new Date(2011, 3, 5, 8, 0, 0, 0),
+                    'America/Havana':       new Date(2012, 2, 10, 2, 0, 0, 0),
+                    'America/New_York':     new Date(2012, 2, 10, 7, 0, 0, 0),
+                    'Asia/Beirut':          new Date(2011, 2, 27, 1, 0, 0, 0),
+                    'Europe/Helsinki':      new Date(2011, 2, 27, 4, 0, 0, 0),
+                    'Europe/Istanbul':      new Date(2011, 2, 28, 5, 0, 0, 0),
+                    'Asia/Damascus':        new Date(2011, 3, 1, 2, 0, 0, 0),
+                    'Asia/Jerusalem':       new Date(2011, 3, 1, 6, 0, 0, 0),
+                    'Asia/Gaza':            new Date(2009, 2, 28, 0, 30, 0, 0),
+                    'Africa/Cairo':         new Date(2009, 3, 25, 0, 30, 0, 0),
+                    'Pacific/Auckland':     new Date(2011, 8, 26, 7, 0, 0, 0),
+                    'Pacific/Fiji':         new Date(2010, 11, 29, 23, 0, 0, 0),
+                    'America/Halifax':      new Date(2011, 2, 13, 6, 0, 0, 0),
+                    'America/Goose_Bay':    new Date(2011, 2, 13, 2, 1, 0, 0),
+                    'America/Miquelon':     new Date(2011, 2, 13, 5, 0, 0, 0),
+                    'America/Godthab':      new Date(2011, 2, 27, 1, 0, 0, 0),
+                    'Europe/Moscow':        ru_pre_dst_change,
+                    'Asia/Yekaterinburg':   ru_pre_dst_change,
+                    'Asia/Omsk':            ru_pre_dst_change,
+                    'Asia/Krasnoyarsk':     ru_pre_dst_change,
+                    'Asia/Irkutsk':         ru_pre_dst_change,
+                    'Asia/Yakutsk':         ru_pre_dst_change,
+                    'Asia/Vladivostok':     ru_pre_dst_change,
+                    'Asia/Kamchatka':       ru_pre_dst_change,
+                    'Europe/Minsk':         ru_pre_dst_change,
+                    'Australia/Perth':      new Date(2008, 10, 1, 1, 0, 0, 0)
+                };
+
+              return dst_starts[tz_name];
+          };
+
+      return {
+          determine: determine,
+          date_is_dst: date_is_dst,
+          dst_start_for: dst_start_for 
+      };
+  }());
+
+  /**
+   * Simple object to perform ambiguity check and to return name of time zone.
+   */
+  jstz.TimeZone = function (tz_name) {
+      'use strict';
+        /**
+         * The keys in this object are timezones that we know may be ambiguous after
+         * a preliminary scan through the olson_tz object.
+         *
+         * The array of timezones to compare must be in the order that daylight savings
+         * starts for the regions.
+         * 
+         * @TODO: Once 2013 is upon us, remove Asia/Gaza from the Beirut ambiguity list,
+         * by then it should suffice that it lives in the Africa/Johannesburg check.
+         */
+      var AMBIGUITIES = {
+              'America/Denver':       ['America/Denver', 'America/Mazatlan'],
+              'America/Chicago':      ['America/Chicago', 'America/Mexico_City'],
+              'America/Santiago':     ['America/Santiago', 'America/Asuncion', 'America/Campo_Grande'],
+              'America/Montevideo':   ['America/Montevideo', 'America/Sao_Paulo'],
+              'Asia/Beirut':          ['Asia/Beirut', 'Europe/Helsinki', 'Europe/Istanbul', 'Asia/Damascus', 'Asia/Jerusalem', 'Asia/Gaza'],
+              'Pacific/Auckland':     ['Pacific/Auckland', 'Pacific/Fiji'],
+              'America/Los_Angeles':  ['America/Los_Angeles', 'America/Santa_Isabel'],
+              'America/New_York':     ['America/Havana', 'America/New_York'],
+              'America/Halifax':      ['America/Goose_Bay', 'America/Halifax'],
+              'America/Godthab':      ['America/Miquelon', 'America/Godthab'],
+              'Asia/Dubai':           ['Europe/Moscow'],
+              'Asia/Dhaka':           ['Asia/Yekaterinburg'],
+              'Asia/Jakarta':         ['Asia/Omsk'],
+              'Asia/Shanghai':        ['Asia/Krasnoyarsk', 'Australia/Perth'],
+              'Asia/Tokyo':           ['Asia/Irkutsk'],
+              'Australia/Brisbane':   ['Asia/Yakutsk'],
+              'Pacific/Noumea':       ['Asia/Vladivostok'],
+              'Pacific/Tarawa':       ['Asia/Kamchatka'],
+              'Africa/Johannesburg':  ['Asia/Gaza', 'Africa/Cairo'],
+              'Asia/Baghdad':         ['Europe/Minsk']
+          },
+
+          timezone_name = tz_name,
+          
+          /**
+           * Checks if a timezone has possible ambiguities. I.e timezones that are similar.
+           *
+           * For example, if the preliminary scan determines that we're in America/Denver.
+           * We double check here that we're really there and not in America/Mazatlan.
+           *
+           * This is done by checking known dates for when daylight savings start for different
+           * timezones during 2010 and 2011.
+           */
+          ambiguity_check = function () {
+              var ambiguity_list = AMBIGUITIES[timezone_name],
+                  length = ambiguity_list.length,
+                  i = 0,
+                  tz = ambiguity_list[0];
+
+              for (; i < length; i += 1) {
+                  tz = ambiguity_list[i];
+
+                  if (jstz.date_is_dst(jstz.dst_start_for(tz))) {
+                      timezone_name = tz;
+                      return;
+                  }
+              }
+          },
+
+          /**
+           * Checks if it is possible that the timezone is ambiguous.
+           */
+          is_ambiguous = function () {
+              return typeof (AMBIGUITIES[timezone_name]) !== 'undefined';
+          };
+
+      if (is_ambiguous()) {
+          ambiguity_check();
+      }
+
+      return {
+          name: function () {
+              return timezone_name;
+          }
+      };
+  };
+
+  jstz.olson = {};
+
+  /*
+   * The keys in this dictionary are comma separated as such:
+   *
+   * First the offset compared to UTC time in minutes.
+   *
+   * Then a flag which is 0 if the timezone does not take daylight savings into account and 1 if it
+   * does.
+   *
+   * Thirdly an optional 's' signifies that the timezone is in the southern hemisphere,
+   * only interesting for timezones with DST.
+   *
+   * The mapped arrays is used for constructing the jstz.TimeZone object from within
+   * jstz.determine_timezone();
+   */
+  jstz.olson.timezones = {
+      '-720,0'   : 'Etc/GMT+12',
+      '-660,0'   : 'Pacific/Pago_Pago',
+      '-600,1'   : 'America/Adak',
+      '-600,0'   : 'Pacific/Honolulu',
+      '-570,0'   : 'Pacific/Marquesas',
+      '-540,0'   : 'Pacific/Gambier',
+      '-540,1'   : 'America/Anchorage',
+      '-480,1'   : 'America/Los_Angeles',
+      '-480,0'   : 'Pacific/Pitcairn',
+      '-420,0'   : 'America/Phoenix',
+      '-420,1'   : 'America/Denver',
+      '-360,0'   : 'America/Guatemala',
+      '-360,1'   : 'America/Chicago',
+      '-360,1,s' : 'Pacific/Easter',
+      '-300,0'   : 'America/Bogota',
+      '-300,1'   : 'America/New_York',
+      '-270,0'   : 'America/Caracas',
+      '-240,1'   : 'America/Halifax',
+      '-240,0'   : 'America/Santo_Domingo',
+      '-240,1,s' : 'America/Santiago',
+      '-210,1'   : 'America/St_Johns',
+      '-180,1'   : 'America/Godthab',
+      '-180,0'   : 'America/Argentina/Buenos_Aires',
+      '-180,1,s' : 'America/Montevideo',
+      '-120,0'   : 'Etc/GMT+2',
+      '-120,1'   : 'Etc/GMT+2',
+      '-60,1'    : 'Atlantic/Azores',
+      '-60,0'    : 'Atlantic/Cape_Verde',
+      '0,0'      : 'Etc/UTC',
+      '0,1'      : 'Europe/London',
+      '60,1'     : 'Europe/Berlin',
+      '60,0'     : 'Africa/Lagos',
+      '60,1,s'   : 'Africa/Windhoek',
+      '120,1'    : 'Asia/Beirut',
+      '120,0'    : 'Africa/Johannesburg',
+      '180,0'    : 'Asia/Baghdad',
+      '180,1'    : 'Europe/Moscow',
+      '210,1'    : 'Asia/Tehran',
+      '240,0'    : 'Asia/Dubai',
+      '240,1'    : 'Asia/Baku',
+      '270,0'    : 'Asia/Kabul',
+      '300,1'    : 'Asia/Yekaterinburg',
+      '300,0'    : 'Asia/Karachi',
+      '330,0'    : 'Asia/Kolkata',
+      '345,0'    : 'Asia/Kathmandu',
+      '360,0'    : 'Asia/Dhaka',
+      '360,1'    : 'Asia/Omsk',
+      '390,0'    : 'Asia/Rangoon',
+      '420,1'    : 'Asia/Krasnoyarsk',
+      '420,0'    : 'Asia/Jakarta',
+      '480,0'    : 'Asia/Shanghai',
+      '480,1'    : 'Asia/Irkutsk',
+      '525,0'    : 'Australia/Eucla',
+      '525,1,s'  : 'Australia/Eucla',
+      '540,1'    : 'Asia/Yakutsk',
+      '540,0'    : 'Asia/Tokyo',
+      '570,0'    : 'Australia/Darwin',
+      '570,1,s'  : 'Australia/Adelaide',
+      '600,0'    : 'Australia/Brisbane',
+      '600,1'    : 'Asia/Vladivostok',
+      '600,1,s'  : 'Australia/Sydney',
+      '630,1,s'  : 'Australia/Lord_Howe',
+      '660,1'    : 'Asia/Kamchatka',
+      '660,0'    : 'Pacific/Noumea',
+      '690,0'    : 'Pacific/Norfolk',
+      '720,1,s'  : 'Pacific/Auckland',
+      '720,0'    : 'Pacific/Tarawa',
+      '765,1,s'  : 'Pacific/Chatham',
+      '780,0'    : 'Pacific/Tongatapu',
+      '780,1,s'  : 'Pacific/Apia',
+      '840,0'    : 'Pacific/Kiritimati'
+  };
+
+  if (typeof exports !== 'undefined') {
+    exports.jstz = jstz;
+  } else {
+    root.jstz = jstz;
+  }
+})(this);
+},{}],3:[function(require,module,exports){
 var EventEmitter = require('events');
 var async = require('async');
 var bind = require('lodash').bind;
@@ -279,8 +755,10 @@ BaseAPIClient.prototype.makeAPICall = function makeAPICall(endpoint, optData, op
     },
   };
 
-  if(optData && optData.opts && optData.opts.authorization)
+  if(optData && optData.opts && optData.opts.authorization){
     args.headers.Authorization = optData.opts.authorization;
+    delete args.data.authorization;
+  }
 
   this._requestQueue.push({
     args: args,
@@ -291,7 +769,7 @@ BaseAPIClient.prototype.makeAPICall = function makeAPICall(endpoint, optData, op
 
 module.exports = BaseAPIClient;
 
-},{"./events/client":3,"./helpers":7,"./transports/request":9,"async":17,"events":25,"inherits":19,"lodash":20,"retry":21,"url-join":24}],3:[function(require,module,exports){
+},{"./events/client":4,"./helpers":8,"./transports/request":10,"async":19,"events":30,"inherits":23,"lodash":24,"retry":26,"url-join":29}],4:[function(require,module,exports){
 /**
  * API client events.
  */
@@ -336,7 +814,7 @@ module.exports.RTM = {
                                                 // was sent from kore
 };
 
-},{}],4:[function(require,module,exports){
+},{}],5:[function(require,module,exports){
 module.exports = {
   CLIENT_EVENTS: {
     WEB: require('./client').WEB,
@@ -346,7 +824,7 @@ module.exports = {
   RTM_MESSAGE_SUBTYPES: require('./rtm').MESSAGE_SUBTYPES,
 };
 
-},{"./client":3,"./rtm":5}],5:[function(require,module,exports){
+},{"./client":4,"./rtm":6}],6:[function(require,module,exports){
 /**
  * Events sent by the kore RTM API.
  */
@@ -361,7 +839,7 @@ module.exports.MESSAGE_SUBTYPES = {
   ME_MESSAGE: 'me_message',
 };
 
-},{}],6:[function(require,module,exports){
+},{}],7:[function(require,module,exports){
 /**
  *
  */
@@ -380,7 +858,7 @@ var makeMessageEventWithSubtype = function makeMessageEventWithSubtype(subtype, 
 
 module.exports.makeMessageEventWithSubtype = makeMessageEventWithSubtype;
 
-},{"./rtm":5}],7:[function(require,module,exports){
+},{"./rtm":6}],8:[function(require,module,exports){
 /**
  * Helpers for working with kore API clients.
  */
@@ -449,13 +927,13 @@ var getAPICallArgs = function getAPICallArgs(token, optData, optCb) {
 module.exports.getData = getData;
 module.exports.getAPICallArgs = getAPICallArgs;
 
-},{"lodash":20}],8:[function(require,module,exports){
+},{"lodash":24}],9:[function(require,module,exports){
 var bind = require('lodash').bind;
 var cloneDeep = require('lodash').cloneDeep;
 var contains = require('lodash').contains;
 var inherits = require('inherits');
 var isUndefined = require('lodash').isUndefined;
-
+var debug = require("debug")("botsdk:KoreRTMClient");
 
 var RTM_API_EVENTS = require('../events/rtm').EVENTS;
 var RTM_CLIENT_INTERNAL_EVENT_TYPES = [
@@ -540,6 +1018,7 @@ KoreRTMClient.prototype._onStart = function _onStart(err, data) {
     console.log(e && e.stack);
   }
   if (err || !data.url) {
+    debug("error or no url in response %s", err || "no url");
     this.emit(CLIENT_EVENTS.UNABLE_TO_RTM_START, err || data.error);
 
     // Any of these mean this client is unusable, so don't attempt to auto-reconnect
@@ -554,7 +1033,7 @@ KoreRTMClient.prototype._onStart = function _onStart(err, data) {
     }
   } else {
     if(__reconnect__){
-      data.url = data.url + "&isReconnect=true"
+      data.url = data.url + "&isReconnect=true";
     }
     this.authenticated = true;
     //this.activeUserId = data.self.id;
@@ -582,6 +1061,7 @@ KoreRTMClient.prototype._safeDisconnect = function _safeDisconnect() {
 
 
 KoreRTMClient.prototype.connect = function connect(socketUrl) {
+  debug("connecting");
   this.emit(CLIENT_EVENTS.WS_OPENING,{});
   this.ws = this._socketFn(socketUrl);
   this.ws.onopen = bind(this.handleWsOpen, this);
@@ -592,6 +1072,7 @@ KoreRTMClient.prototype.connect = function connect(socketUrl) {
 };
 
 KoreRTMClient.prototype.disconnect = function disconnect(optErr, optCode) {
+  debug("disconnecting");
   this.emit(CLIENT_EVENTS.DISCONNECT, optErr, optCode);
   this.autoReconnect = false;
   this._safeDisconnect();
@@ -599,6 +1080,7 @@ KoreRTMClient.prototype.disconnect = function disconnect(optErr, optCode) {
 
 
 KoreRTMClient.prototype.reconnect = function reconnect() {
+  debug("reconnecting");
   console.log("in reconnect");
 
   if (!this._reconnecting) {
@@ -615,6 +1097,7 @@ KoreRTMClient.prototype.reconnect = function reconnect() {
 
 
 KoreRTMClient.prototype.handleWsOpen = function handleWsOpen() {
+  debug("connected");
   this.connected = true;
   this.emit('open',{data:{}});
   this._connAttempts = 0;  
@@ -669,6 +1152,7 @@ KoreRTMClient.prototype._handleWsMessageViaEventHandler = function _handleWsMess
 };
 
 KoreRTMClient.prototype.handleWsError = function handleWsError(err) {
+  debug("web socket error::%s",err);
   this.emit(CLIENT_EVENTS.WS_ERROR, err);
 };
 
@@ -682,6 +1166,7 @@ KoreRTMClient.prototype.handleWsClose = function handleWsClose(code, reason) {
       this.reconnect();
     }
   } else {
+    debug("websocket closed with auto-reconnect false on the RTM client");
     this.disconnect('websocket closed with auto-reconnect false on the RTM client');
   }
 };
@@ -722,6 +1207,7 @@ KoreRTMClient.prototype.send = function send(message, optCb) {
     });
   } else {
     err = 'ws not connected, unable to send message';
+    debug(err);
     if (!isUndefined(optCb)) {
       optCb(new Error(err));
     }
@@ -731,7 +1217,7 @@ KoreRTMClient.prototype.send = function send(message, optCb) {
 
 module.exports = KoreRTMClient;
 
-},{"../client":2,"../events/client":3,"../events/rtm":5,"../events/utils":6,"../transports/ws":10,"../web/apis":13,"inherits":19,"lodash":20}],9:[function(require,module,exports){
+},{"../client":3,"../events/client":4,"../events/rtm":6,"../events/utils":7,"../transports/ws":11,"../web/apis":15,"debug":21,"inherits":23,"lodash":24}],10:[function(require,module,exports){
 /**
  * Simple transport using the node request library.
  */
@@ -771,14 +1257,21 @@ var getRequestTransportArgs = function getReqestTransportArgs(args) {
 
 
 var requestTransport = function requestTransport(args, cb) {
+  
   var requestArgs = getRequestTransportArgs(args);
-  request.post(requestArgs, partial(handleRequestTranportRes, cb));
+
+  if (args.data && args.data.type && args.data.type === 'GET') {
+    request.get(requestArgs, partial(handleRequestTranportRes, cb));
+  } else {
+    request.post(requestArgs, partial(handleRequestTranportRes, cb));
+  }
+  
 };
 
 
 module.exports.requestTransport = requestTransport;
 
-},{"browser-request":18,"lodash":20}],10:[function(require,module,exports){
+},{"browser-request":20,"lodash":24}],11:[function(require,module,exports){
 
 var wsTransport = function wsTransport(socketUrl, opts) {
   var wsTransportOpts = opts || {};
@@ -788,7 +1281,7 @@ var wsTransport = function wsTransport(socketUrl, opts) {
 
 module.exports = wsTransport;
 
-},{}],11:[function(require,module,exports){
+},{}],12:[function(require,module,exports){
 
 
 function BaseApi () {
@@ -796,7 +1289,7 @@ function BaseApi () {
 }
 
 module.exports = BaseApi;
-},{}],12:[function(require,module,exports){
+},{}],13:[function(require,module,exports){
 var BaseApi = require('./BaseApi');
 var inherits = require('inherits');
 
@@ -817,14 +1310,99 @@ AnonymousLogin.prototype.login = function login(opts, optCb) {
 
 
 module.exports = AnonymousLogin;
-},{"./BaseApi":11,"inherits":19}],13:[function(require,module,exports){
+},{"./BaseApi":12,"inherits":23}],14:[function(require,module,exports){
+var BaseApi = require('./BaseApi');
+var inherits = require('inherits');
+
+function HistoryApi(client) {
+  this.name = 'history';
+  this.client = client;
+}
+
+inherits(HistoryApi, BaseApi);
+
+HistoryApi.prototype.history = function history(opts, optCb) {
+  opts = opts || {};
+  var args = {
+    opts: opts,
+    type: "GET"
+  };
+	var _api = '/botmessages/rtm';
+	var del = false;
+	var x = '?';
+
+	if (opts.botInfo && opts.botInfo.taskBotId) {
+
+		if (del === false) {
+			_api += x + 'botId=' + opts.botInfo.taskBotId + '';
+			x = '&';
+			del = true;
+		} else {
+			_api += x + 'botId=' + opts.botInfo.taskBotId + '';
+		}
+       delete opts.botInfo;
+	}
+
+	if (opts.offset) {
+		if (del === false) {
+			_api += x + 'offset=' + opts.offset + '';
+			x = '&';
+			del = true;
+		} else {
+			_api += x + 'offset=' + opts.offset + '';
+		}
+		delete opts.offset;
+	}
+
+	if (opts.limit) {
+		if (del === false) {
+			_api += x + 'limit=' + opts.limit + '';
+			x = '&';
+			del = true;
+		} else {
+			_api += x + 'limit=' + opts.limit + '';
+		}
+		delete opts.limit;
+	}
+
+	if (opts.forward) {
+		if (del === false) {
+			_api += x + 'forward=' + opts.forward + '';
+			x = '&';
+			del = true;
+		} else {
+			_api += x + 'forward=' + opts.forward + '';
+		}
+		delete opts.forward;
+	}
+
+	if (opts.msgId) {
+		if (del === false) {
+			_api += x + 'msgId=' + opts.msgId + '';
+			x = '&';
+			del = true;
+		} else {
+			_api += x + 'msgId=' + opts.msgId + '';
+		}
+		delete opts.msgId;
+	}
+
+
+  return this.client.makeAPICall(_api, args, optCb);
+};
+
+
+module.exports = HistoryApi;
+},{"./BaseApi":12,"inherits":23}],15:[function(require,module,exports){
 module.exports = {
   RtmApi: require('./rtm.js'),
   LogInApi: require('./login.js'),
   AnonymousLogin : require('./anonymouslogin.js'),
+  HistoryApi : require('./history.js'),
 };
 
-},{"./anonymouslogin.js":12,"./login.js":14,"./rtm.js":15}],14:[function(require,module,exports){
+
+},{"./anonymouslogin.js":13,"./history.js":14,"./login.js":16,"./rtm.js":17}],16:[function(require,module,exports){
 var BaseApi = require('./BaseApi');
 var inherits = require('inherits');
 
@@ -845,7 +1423,7 @@ LogInApi.prototype.login = function login(opts, optCb) {
 
 
 module.exports = LogInApi;
-},{"./BaseApi":11,"inherits":19}],15:[function(require,module,exports){
+},{"./BaseApi":12,"inherits":23}],17:[function(require,module,exports){
 var BaseApi = require('./BaseApi');
 var inherits = require('inherits');
 
@@ -867,7 +1445,7 @@ RtmApi.prototype.start = function start(opts, optCb) {
 
 module.exports = RtmApi;
 
-},{"./BaseApi":11,"inherits":19}],16:[function(require,module,exports){
+},{"./BaseApi":12,"inherits":23}],18:[function(require,module,exports){
 var bind = require('lodash').bind;
 var forEach = require('lodash').forEach;
 var inherits = require('inherits');
@@ -905,7 +1483,7 @@ WebAPIClient.prototype._createFacets = function _createFacets() {
 
 module.exports = WebAPIClient;
 
-},{"../client":2,"./apis/index":13,"inherits":19,"lodash":20}],17:[function(require,module,exports){
+},{"../client":3,"./apis/index":15,"inherits":23,"lodash":24}],19:[function(require,module,exports){
 (function (process,global){
 /*!
  * async
@@ -2174,7 +2752,7 @@ module.exports = WebAPIClient;
 }());
 
 }).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"_process":26}],18:[function(require,module,exports){
+},{"_process":31}],20:[function(require,module,exports){
 // Browser Request
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -2670,7 +3248,376 @@ function b64_enc (data) {
 }));
 //UMD FOOTER END
 
-},{}],19:[function(require,module,exports){
+},{}],21:[function(require,module,exports){
+
+/**
+ * This is the web browser implementation of `debug()`.
+ *
+ * Expose `debug()` as the module.
+ */
+
+exports = module.exports = require('./debug');
+exports.log = log;
+exports.formatArgs = formatArgs;
+exports.save = save;
+exports.load = load;
+exports.useColors = useColors;
+exports.storage = 'undefined' != typeof chrome
+               && 'undefined' != typeof chrome.storage
+                  ? chrome.storage.local
+                  : localstorage();
+
+/**
+ * Colors.
+ */
+
+exports.colors = [
+  'lightseagreen',
+  'forestgreen',
+  'goldenrod',
+  'dodgerblue',
+  'darkorchid',
+  'crimson'
+];
+
+/**
+ * Currently only WebKit-based Web Inspectors, Firefox >= v31,
+ * and the Firebug extension (any Firefox version) are known
+ * to support "%c" CSS customizations.
+ *
+ * TODO: add a `localStorage` variable to explicitly enable/disable colors
+ */
+
+function useColors() {
+  // is webkit? http://stackoverflow.com/a/16459606/376773
+  return ('WebkitAppearance' in document.documentElement.style) ||
+    // is firebug? http://stackoverflow.com/a/398120/376773
+    (window.console && (console.firebug || (console.exception && console.table))) ||
+    // is firefox >= v31?
+    // https://developer.mozilla.org/en-US/docs/Tools/Web_Console#Styling_messages
+    (navigator.userAgent.toLowerCase().match(/firefox\/(\d+)/) && parseInt(RegExp.$1, 10) >= 31);
+}
+
+/**
+ * Map %j to `JSON.stringify()`, since no Web Inspectors do that by default.
+ */
+
+exports.formatters.j = function(v) {
+  return JSON.stringify(v);
+};
+
+
+/**
+ * Colorize log arguments if enabled.
+ *
+ * @api public
+ */
+
+function formatArgs() {
+  var args = arguments;
+  var useColors = this.useColors;
+
+  args[0] = (useColors ? '%c' : '')
+    + this.namespace
+    + (useColors ? ' %c' : ' ')
+    + args[0]
+    + (useColors ? '%c ' : ' ')
+    + '+' + exports.humanize(this.diff);
+
+  if (!useColors) return args;
+
+  var c = 'color: ' + this.color;
+  args = [args[0], c, 'color: inherit'].concat(Array.prototype.slice.call(args, 1));
+
+  // the final "%c" is somewhat tricky, because there could be other
+  // arguments passed either before or after the %c, so we need to
+  // figure out the correct index to insert the CSS into
+  var index = 0;
+  var lastC = 0;
+  args[0].replace(/%[a-z%]/g, function(match) {
+    if ('%%' === match) return;
+    index++;
+    if ('%c' === match) {
+      // we only are interested in the *last* %c
+      // (the user may have provided their own)
+      lastC = index;
+    }
+  });
+
+  args.splice(lastC, 0, c);
+  return args;
+}
+
+/**
+ * Invokes `console.log()` when available.
+ * No-op when `console.log` is not a "function".
+ *
+ * @api public
+ */
+
+function log() {
+  // this hackery is required for IE8/9, where
+  // the `console.log` function doesn't have 'apply'
+  return 'object' === typeof console
+    && console.log
+    && Function.prototype.apply.call(console.log, console, arguments);
+}
+
+/**
+ * Save `namespaces`.
+ *
+ * @param {String} namespaces
+ * @api private
+ */
+
+function save(namespaces) {
+  try {
+    if (null == namespaces) {
+      exports.storage.removeItem('debug');
+    } else {
+      exports.storage.debug = namespaces;
+    }
+  } catch(e) {}
+}
+
+/**
+ * Load `namespaces`.
+ *
+ * @return {String} returns the previously persisted debug modes
+ * @api private
+ */
+
+function load() {
+  var r;
+  try {
+    r = exports.storage.debug;
+  } catch(e) {}
+  return r;
+}
+
+/**
+ * Enable namespaces listed in `localStorage.debug` initially.
+ */
+
+exports.enable(load());
+
+/**
+ * Localstorage attempts to return the localstorage.
+ *
+ * This is necessary because safari throws
+ * when a user disables cookies/localstorage
+ * and you attempt to access it.
+ *
+ * @return {LocalStorage}
+ * @api private
+ */
+
+function localstorage(){
+  try {
+    return window.localStorage;
+  } catch (e) {}
+}
+
+},{"./debug":22}],22:[function(require,module,exports){
+
+/**
+ * This is the common logic for both the Node.js and web browser
+ * implementations of `debug()`.
+ *
+ * Expose `debug()` as the module.
+ */
+
+exports = module.exports = debug;
+exports.coerce = coerce;
+exports.disable = disable;
+exports.enable = enable;
+exports.enabled = enabled;
+exports.humanize = require('ms');
+
+/**
+ * The currently active debug mode names, and names to skip.
+ */
+
+exports.names = [];
+exports.skips = [];
+
+/**
+ * Map of special "%n" handling functions, for the debug "format" argument.
+ *
+ * Valid key names are a single, lowercased letter, i.e. "n".
+ */
+
+exports.formatters = {};
+
+/**
+ * Previously assigned color.
+ */
+
+var prevColor = 0;
+
+/**
+ * Previous log timestamp.
+ */
+
+var prevTime;
+
+/**
+ * Select a color.
+ *
+ * @return {Number}
+ * @api private
+ */
+
+function selectColor() {
+  return exports.colors[prevColor++ % exports.colors.length];
+}
+
+/**
+ * Create a debugger with the given `namespace`.
+ *
+ * @param {String} namespace
+ * @return {Function}
+ * @api public
+ */
+
+function debug(namespace) {
+
+  // define the `disabled` version
+  function disabled() {
+  }
+  disabled.enabled = false;
+
+  // define the `enabled` version
+  function enabled() {
+
+    var self = enabled;
+
+    // set `diff` timestamp
+    var curr = +new Date();
+    var ms = curr - (prevTime || curr);
+    self.diff = ms;
+    self.prev = prevTime;
+    self.curr = curr;
+    prevTime = curr;
+
+    // add the `color` if not set
+    if (null == self.useColors) self.useColors = exports.useColors();
+    if (null == self.color && self.useColors) self.color = selectColor();
+
+    var args = Array.prototype.slice.call(arguments);
+
+    args[0] = exports.coerce(args[0]);
+
+    if ('string' !== typeof args[0]) {
+      // anything else let's inspect with %o
+      args = ['%o'].concat(args);
+    }
+
+    // apply any `formatters` transformations
+    var index = 0;
+    args[0] = args[0].replace(/%([a-z%])/g, function(match, format) {
+      // if we encounter an escaped % then don't increase the array index
+      if (match === '%%') return match;
+      index++;
+      var formatter = exports.formatters[format];
+      if ('function' === typeof formatter) {
+        var val = args[index];
+        match = formatter.call(self, val);
+
+        // now we need to remove `args[index]` since it's inlined in the `format`
+        args.splice(index, 1);
+        index--;
+      }
+      return match;
+    });
+
+    if ('function' === typeof exports.formatArgs) {
+      args = exports.formatArgs.apply(self, args);
+    }
+    var logFn = enabled.log || exports.log || console.log.bind(console);
+    logFn.apply(self, args);
+  }
+  enabled.enabled = true;
+
+  var fn = exports.enabled(namespace) ? enabled : disabled;
+
+  fn.namespace = namespace;
+
+  return fn;
+}
+
+/**
+ * Enables a debug mode by namespaces. This can include modes
+ * separated by a colon and wildcards.
+ *
+ * @param {String} namespaces
+ * @api public
+ */
+
+function enable(namespaces) {
+  exports.save(namespaces);
+
+  var split = (namespaces || '').split(/[\s,]+/);
+  var len = split.length;
+
+  for (var i = 0; i < len; i++) {
+    if (!split[i]) continue; // ignore empty strings
+    namespaces = split[i].replace(/\*/g, '.*?');
+    if (namespaces[0] === '-') {
+      exports.skips.push(new RegExp('^' + namespaces.substr(1) + '$'));
+    } else {
+      exports.names.push(new RegExp('^' + namespaces + '$'));
+    }
+  }
+}
+
+/**
+ * Disable debug output.
+ *
+ * @api public
+ */
+
+function disable() {
+  exports.enable('');
+}
+
+/**
+ * Returns true if the given mode name is enabled, false otherwise.
+ *
+ * @param {String} name
+ * @return {Boolean}
+ * @api public
+ */
+
+function enabled(name) {
+  var i, len;
+  for (i = 0, len = exports.skips.length; i < len; i++) {
+    if (exports.skips[i].test(name)) {
+      return false;
+    }
+  }
+  for (i = 0, len = exports.names.length; i < len; i++) {
+    if (exports.names[i].test(name)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Coerce `val`.
+ *
+ * @param {Mixed} val
+ * @return {Mixed}
+ * @api private
+ */
+
+function coerce(val) {
+  if (val instanceof Error) return val.stack || val.message;
+  return val;
+}
+
+},{"ms":25}],23:[function(require,module,exports){
 if (typeof Object.create === 'function') {
   // implementation from standard node.js 'util' module
   module.exports = function inherits(ctor, superCtor) {
@@ -2695,7 +3642,7 @@ if (typeof Object.create === 'function') {
   }
 }
 
-},{}],20:[function(require,module,exports){
+},{}],24:[function(require,module,exports){
 (function (global){
 /**
  * @license
@@ -15050,9 +15997,136 @@ if (typeof Object.create === 'function') {
 }.call(this));
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],21:[function(require,module,exports){
+},{}],25:[function(require,module,exports){
+/**
+ * Helpers.
+ */
+
+var s = 1000;
+var m = s * 60;
+var h = m * 60;
+var d = h * 24;
+var y = d * 365.25;
+
+/**
+ * Parse or format the given `val`.
+ *
+ * Options:
+ *
+ *  - `long` verbose formatting [false]
+ *
+ * @param {String|Number} val
+ * @param {Object} options
+ * @return {String|Number}
+ * @api public
+ */
+
+module.exports = function(val, options){
+  options = options || {};
+  if ('string' == typeof val) return parse(val);
+  return options.long
+    ? long(val)
+    : short(val);
+};
+
+/**
+ * Parse the given `str` and return milliseconds.
+ *
+ * @param {String} str
+ * @return {Number}
+ * @api private
+ */
+
+function parse(str) {
+  str = '' + str;
+  if (str.length > 10000) return;
+  var match = /^((?:\d+)?\.?\d+) *(milliseconds?|msecs?|ms|seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d|years?|yrs?|y)?$/i.exec(str);
+  if (!match) return;
+  var n = parseFloat(match[1]);
+  var type = (match[2] || 'ms').toLowerCase();
+  switch (type) {
+    case 'years':
+    case 'year':
+    case 'yrs':
+    case 'yr':
+    case 'y':
+      return n * y;
+    case 'days':
+    case 'day':
+    case 'd':
+      return n * d;
+    case 'hours':
+    case 'hour':
+    case 'hrs':
+    case 'hr':
+    case 'h':
+      return n * h;
+    case 'minutes':
+    case 'minute':
+    case 'mins':
+    case 'min':
+    case 'm':
+      return n * m;
+    case 'seconds':
+    case 'second':
+    case 'secs':
+    case 'sec':
+    case 's':
+      return n * s;
+    case 'milliseconds':
+    case 'millisecond':
+    case 'msecs':
+    case 'msec':
+    case 'ms':
+      return n;
+  }
+}
+
+/**
+ * Short format for `ms`.
+ *
+ * @param {Number} ms
+ * @return {String}
+ * @api private
+ */
+
+function short(ms) {
+  if (ms >= d) return Math.round(ms / d) + 'd';
+  if (ms >= h) return Math.round(ms / h) + 'h';
+  if (ms >= m) return Math.round(ms / m) + 'm';
+  if (ms >= s) return Math.round(ms / s) + 's';
+  return ms + 'ms';
+}
+
+/**
+ * Long format for `ms`.
+ *
+ * @param {Number} ms
+ * @return {String}
+ * @api private
+ */
+
+function long(ms) {
+  return plural(ms, d, 'day')
+    || plural(ms, h, 'hour')
+    || plural(ms, m, 'minute')
+    || plural(ms, s, 'second')
+    || ms + ' ms';
+}
+
+/**
+ * Pluralization helper.
+ */
+
+function plural(ms, n, name) {
+  if (ms < n) return;
+  if (ms < n * 1.5) return Math.floor(ms / n) + ' ' + name;
+  return Math.ceil(ms / n) + ' ' + name + 's';
+}
+
+},{}],26:[function(require,module,exports){
 module.exports = require('./lib/retry');
-},{"./lib/retry":22}],22:[function(require,module,exports){
+},{"./lib/retry":27}],27:[function(require,module,exports){
 var RetryOperation = require('./retry_operation');
 
 exports.operation = function(options) {
@@ -15148,7 +16222,7 @@ exports.wrap = function(obj, options, methods) {
   }
 };
 
-},{"./retry_operation":23}],23:[function(require,module,exports){
+},{"./retry_operation":28}],28:[function(require,module,exports){
 function RetryOperation(timeouts, retryForever) {
   this._timeouts = timeouts;
   this._fn = null;
@@ -15270,7 +16344,7 @@ RetryOperation.prototype.mainError = function() {
   return mainError;
 };
 
-},{}],24:[function(require,module,exports){
+},{}],29:[function(require,module,exports){
 function normalize (str) {
   return str
           .replace(/[\/]+/g, '/')
@@ -15283,7 +16357,7 @@ module.exports = function () {
   var joined = [].slice.call(arguments, 0).join('/');
   return normalize(joined);
 };
-},{}],25:[function(require,module,exports){
+},{}],30:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -15583,7 +16657,7 @@ function isUndefined(arg) {
   return arg === void 0;
 }
 
-},{}],26:[function(require,module,exports){
+},{}],31:[function(require,module,exports){
 // shim for using process in browser
 
 var process = module.exports = {};
