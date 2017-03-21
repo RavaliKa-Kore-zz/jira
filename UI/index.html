@@ -17,7 +17,7 @@
 
 				// Client has to fill the claims and call the callback.
 				$.ajax({
-					url: "https://pilot-bots.kore.com/api/users/sts",
+					url: "https://docker.korebot.com/api/users/sts",
 					type: 'post',
 					headers: {
 						Authorization: "bearer xyz------"
@@ -32,7 +32,7 @@
 
 			var botOptions = {};
 			botOptions.logLevel = 'debug';
-			botOptions.koreAPIUrl = "https://pilot-bots.kore.com/api/";
+			botOptions.koreAPIUrl = "https://http://docker.korebot.com/api/";
 			botOptions.assertionFn = assertion;
 			/*
 			 Below config:(To support the anonymous user in test environments only.)
@@ -44,9 +44,9 @@
 			*/
 			botOptions.test = true;
 			botOptions.koreAnonymousFn = koreAnonymousFn;
-			botOptions.clientId   = "cs-63e75351-f6a0-5aa9-8f3e-a4703e5f4666"; // secure client-id
+			botOptions.clientId   = "cs-760954b9-7956-5c15-a5bb-998bebc70988"; // secure client-id
 
-			botOptions.botInfo = {name:"Kore Healthcare","_id":"st-34713e2e-c3fd-5ae9-822a-4e440a4085ac"}; // bot name is case sensitive
+			botOptions.botInfo = {name:"Jira","_id":"st-96403ea6-cd36-5748-9317-d841dfb35933"}; // bot name is case sensitive
 			
 			var chatConfig={
 				botOptions:botOptions,
@@ -91,7 +91,7 @@
 		
 	</div>
 		<div id="chatContainer" >
-		<button class="openChatWindow" >Talk to Kore Healthcare</button>
+		<button class="openChatWindow" >Open chat window</button>
 		</div>
 	</body>
 </html>
